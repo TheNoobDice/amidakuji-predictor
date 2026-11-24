@@ -1,0 +1,3 @@
+[tool.pytest.ini_options]
+# Tell pytest to look for the `amida` package inside the `src` folder.
+pythonpath = ["src"]

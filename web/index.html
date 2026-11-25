@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>爬梯子預測</title>
+<style>
+  body { font-family: sans-serif; max-width: 520px; margin: 20px auto; }
+  svg { width: 100%; border: 1px solid #ccc; }
+  .slot { cursor: pointer; }
+  .bar { background: #4a90d9; color: #fff; margin: 3px 0; padding: 2px 6px; white-space: nowrap; }
+</style>
+</head>
+<body>
+<h3>爬梯子預測</h3>
+<label>橫線數 K <select id="K"></select></label>
+<label>模式 <select id="mode"><option value="f">選起點</option><option value="b">選終點</option></select></label>
+<label>線 <select id="pick"></select></label>
+<svg id="svg" viewBox="0 0 300 260"></svg>
+<p>點橫線位置：虛線（未知）→ 紅色（有）→ ✕（沒有）</p>
+<div id="out"></div>
+<script>
+const N = 6, H = 5;
+const known = Array.from({ length: H }, () => Array(N - 1).fill(null));
+
+function bits(m) { let c = 0; while (m) { c += m & 1; m >>= 1; } return c; }
+
+function endpointProbs(n, h, K, start, known) {
+  // Every legal rung pattern per row, stored as a bitmask.
+  const rows = [];
+  for (let r = 0; r < h; r++) {
+    const pats = [];
+    for (let m = 0; m < (1 << (n - 1)); m++) {
+      if (m & (m >> 1)) continue; // adjacent rungs are not allowed
+      let ok = true;
+      for (let i = 0; i < n - 1; i++) {
+        const k = known[r][i];
+        if (k !== null && k !== ((m >> i) & 1)) ok = false;
+      }
+      if (ok) pats.push(m);
+    }
+    rows.push(pats);
+  }
+  // State key: "position,rungsUsed,gapsCovered" -> number of ways.
+  let dp = new Map([[`${start},0,0`, 1]]);
+  for (const pats of rows) {
+    const next = new Map();
+    for (const [key, ways] of dp) {
+      const [pos, used, cov] = key.split(",").map(Number);
+      for (const m of pats) {
+        let np = pos;
+        if (pos < n - 1 && ((m >> pos) & 1)) np = pos + 1;
+        else if (pos > 0 && ((m >> (pos - 1)) & 1)) np = pos - 1;
+        const nk = `${np},${used + bits(m)},${cov | m}`;
+        next.set(nk, (next.get(nk) || 0) + ways);
+      }
+    }
+    dp = next;
+  }
+  const full = (1 << (n - 1)) - 1;
+  const counts = Array(n).fill(0);
+  for (const [key, ways] of dp) {
+    const [pos, used, cov] = key.split(",").map(Number);
+    if (used === K && cov === full) counts[pos] += ways;
+  }
+  const total = counts.reduce((a, b) => a + b, 0);
+  return total ? counts.map(c => c / total) : counts;
+}
+
+const X = i => 30 + i * 48, Y = r => 50 + r * 35;
+const $ = id => document.getElementById(id);
+
+function tap(r, i) {
+  const v = known[r][i];
+  known[r][i] = v === null ? 1 : v === 1 ? 0 : null;
+  update();
+}
+
+function update() {
+  let s = "";
+  for (let i = 0; i < N; i++) {
+    s += `<line x1="${X(i)}" y1="20" x2="${X(i)}" y2="230" stroke="#333"/>`;
+    s += `<text x="${X(i)}" y="14" text-anchor="middle">${i + 1}</text>`;
+    s += `<text x="${X(i)}" y="248" text-anchor="middle">${i + 1}</text>`;
+  }
+  for (let r = 0; r < H; r++) for (let i = 0; i < N - 1; i++) {
+    const v = known[r][i], y = Y(r);
+    s += `<g class="slot" onclick="tap(${r},${i})">`;
+    s += `<rect x="${X(i)}" y="${y - 14}" width="48" height="28" fill="transparent"/>`;
+    if (v === 0) s += `<text x="${X(i) + 24}" y="${y + 4}" text-anchor="middle" fill="#999">✕</text>`;
+    else s += `<line x1="${X(i)}" y1="${y}" x2="${X(i + 1)}" y2="${y}" stroke="${v === 1 ? "#d33" : "#bbb"}" stroke-width="${v === 1 ? 4 : 1}" ${v === null ? 'stroke-dasharray="4"' : ""}/>`;
+    s += `</g>`;
+  }
+  $("svg").innerHTML = s;
+
+  const K = +$("K").value, pick = +$("pick").value;
+  const forward = $("mode").value === "f";
+  const probs = forward
+    ? endpointProbs(N, H, K, pick, known)
+    : endpointProbs(N, H, K, pick, known.slice().reverse());
+  $("out").innerHTML = (forward ? "終點機率" : "起點機率") + probs.map((p, i) =>
+    `<div class="bar" style="width:${Math.max(p * 100, 8)}%">${i + 1}：${(p * 100).toFixed(1)}%</div>`).join("");
+}
+
+for (let k = 5; k <= 9; k++) $("K").add(new Option(k, k));
+for (let i = 0; i < N; i++) $("pick").add(new Option(i + 1, i));
+["K", "mode", "pick"].forEach(id => $(id).onchange = update);
+update();
+</script>
+</body>
+</html>

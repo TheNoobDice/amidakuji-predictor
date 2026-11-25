@@ -16,7 +16,7 @@
 <label>模式 <select id="mode"><option value="f">選起點</option><option value="b">選終點</option></select></label>
 <label>線 <select id="pick"></select></label>
 <svg id="svg" viewBox="0 0 300 260"></svg>
-<p>點橫線位置：虛線（未知）→ 紅色（有）→ ✕（沒有）</p>
+<p>點橫線位置：虛線（未知）→ 紅色（有）→ ✕（沒有）<br>點上方字母或下方數字：切換模式和線</p>
 <div id="out"></div>
 <script>
 const N = 6, H = 5;
@@ -76,12 +76,21 @@ function tap(r, i) {
   update();
 }
 
+function choose(mode, i) {
+  $("mode").value = mode;
+  fillPick();
+  $("pick").value = i;
+  update();
+}
+
 function update() {
   let s = "";
   for (let i = 0; i < N; i++) {
+    const fwd = $("mode").value === "f", sel = +$("pick").value === i;
+    const topOn = fwd && sel, botOn = !fwd && sel;
     s += `<line x1="${X(i)}" y1="20" x2="${X(i)}" y2="230" stroke="#333"/>`;
-    s += `<text x="${X(i)}" y="14" text-anchor="middle">${START_LABELS[i]}</text>`;
-    s += `<text x="${X(i)}" y="248" text-anchor="middle">${i + 1}</text>`;
+    s += `<text class="slot" onclick="choose('f',${i})" x="${X(i)}" y="14" text-anchor="middle" fill="${topOn ? "#d33" : "#000"}" font-weight="${topOn ? "bold" : "normal"}">${START_LABELS[i]}</text>`;
+    s += `<text class="slot" onclick="choose('b',${i})" x="${X(i)}" y="248" text-anchor="middle" fill="${botOn ? "#d33" : "#000"}" font-weight="${botOn ? "bold" : "normal"}">${i + 1}</text>`;
   }
   for (let r = 0; r < H; r++) for (let i = 0; i < N - 1; i++) {
     const v = known[r][i], y = Y(r);

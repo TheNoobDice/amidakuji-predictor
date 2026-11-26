@@ -16,12 +16,16 @@
 <label>模式 <select id="mode"><option value="f">選起點</option><option value="b">選終點</option></select></label>
 <label>線 <select id="pick"></select></label>
 <svg id="svg" viewBox="0 0 300 260"></svg>
-<p>點橫線位置：虛線（未知）→ 紅色（有）→ ✕（沒有）<br>點上方字母或下方數字：切換模式和線</p>
+<p>點橫線位置：虛線（未知）→ 紅色（有）→ ✕（沒有）<br>點腳線的區段：標記為走過（綠色），它上端兩側的橫線位置不能是未知，只能在「有」和「沒有」之間切換<br>點上方字母或下方數字：切換模式和線</p>
 <div id="out"></div>
 <script>
 const N = 6, H = 5;
 const START_LABELS = "ABCDEF";
 const known = Array.from({ length: H }, () => Array(N - 1).fill(null));
+// walked[r][x] = true means the leg section just below row r on line x was walked.
+const walked = Array.from({ length: H }, () => Array(N).fill(false));
+// A slot is locked when a walked section starts right beside it.
+const isLocked = (r, i) => walked[r][i] || walked[r][i + 1];
 
 function bits(m) { let c = 0; while (m) { c += m & 1; m >>= 1; } return c; }
 
@@ -72,7 +76,24 @@ const $ = id => document.getElementById(id);
 
 function tap(r, i) {
   const v = known[r][i];
-  known[r][i] = v === null ? 1 : v === 1 ? 0 : null;
+  if (isLocked(r, i)) known[r][i] = v === 1 ? 0 : 1; // locked: only exist / not exist
+  else known[r][i] = v === null ? 1 : v === 1 ? 0 : null;
+  if (known[r][i] === 1) {
+    // Rungs can't touch: turn off a neighbouring rung in the same row.
+    for (const j of [i - 1, i + 1]) {
+      if (j >= 0 && j < N - 1 && known[r][j] === 1) known[r][j] = 0;
+    }
+  }
+  update();
+}
+
+function tapSection(r, x) {
+  walked[r][x] = !walked[r][x];
+  for (const i of [x - 1, x]) {
+    if (i < 0 || i >= N - 1) continue;
+    if (isLocked(r, i)) { if (known[r][i] === null) known[r][i] = 0; }
+    else known[r][i] = null;
+  }
   update();
 }
 
@@ -95,10 +116,15 @@ function update() {
   for (let r = 0; r < H; r++) for (let i = 0; i < N - 1; i++) {
     const v = known[r][i], y = Y(r);
     s += `<g class="slot" onclick="tap(${r},${i})">`;
-    s += `<rect x="${X(i)}" y="${y - 14}" width="48" height="28" fill="transparent"/>`;
+    s += `<rect x="${X(i) + 8}" y="${y - 14}" width="32" height="28" fill="transparent"/>`;
     if (v === 0) s += `<text x="${X(i) + 24}" y="${y + 4}" text-anchor="middle" fill="#999">✕</text>`;
     else s += `<line x1="${X(i)}" y1="${y}" x2="${X(i + 1)}" y2="${y}" stroke="${v === 1 ? "#d33" : "#bbb"}" stroke-width="${v === 1 ? 4 : 1}" ${v === null ? 'stroke-dasharray="4"' : ""}/>`;
     s += `</g>`;
+  }
+  for (let r = 0; r < H; r++) for (let x = 0; x < N; x++) {
+    const y1 = Y(r), y2 = r < H - 1 ? Y(r + 1) : 230;
+    if (walked[r][x]) s += `<line x1="${X(x)}" y1="${y1}" x2="${X(x)}" y2="${y2}" stroke="#2a9d4a" stroke-width="5"/>`;
+    s += `<rect class="slot" onclick="tapSection(${r},${x})" x="${X(x) - 8}" y="${y1}" width="16" height="${y2 - y1}" fill="transparent"/>`;
   }
   $("svg").innerHTML = s;
 

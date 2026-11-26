@@ -4,168 +4,272 @@
 <meta charset="utf-8">
 <title>爬梯子預測</title>
 <style>
+  /* page layout: narrow centered column */
   body { font-family: sans-serif; max-width: 520px; margin: 20px auto; }
+  /* the ladder drawing fills the width and has a thin border */
   svg { width: 100%; border: 1px solid #ccc; }
+  /* clickable things show a pointer cursor */
   .slot { cursor: pointer; }
+  /* one probability bar */
   .bar { background: #4a90d9; color: #fff; margin: 3px 0; padding: 2px 6px; white-space: nowrap; }
 </style>
 </head>
 <body>
 <h3>爬梯子預測</h3>
+<!-- number of rungs (K) -->
 <label>橫線數<select id="K"></select></label>
+<!-- forward = pick a start, backward = pick an end -->
 <label>模式 <select id="mode"><option value="f">選起點</option><option value="b">選終點</option></select></label>
+<!-- which line is picked -->
 <label>線 <select id="pick"></select></label>
+<!-- the ladder is drawn here -->
 <svg id="svg" viewBox="0 0 300 260"></svg>
-<p>點橫線位置：虛線（未知）→ 紅色（有）→ ✕（沒有）<br>點腳線的區段：標記為走過（綠色），它上端兩側的橫線位置不能是未知，只能在「有」和「沒有」之間切換<br>點上方字母或下方數字：切換模式和線</p>
+<p>左鍵：未知→有→沒有→有…　右鍵：未知→沒有；有／沒有→未知<br>灰色實線／灰色✕：未知，但規則已推得一定有／一定沒有（點一下會固定成那個狀態）<br>綠色腳線上端的未知位置預設為灰色✕（計算時視為沒有）<br>操作若會讓盤面不可能成立，會跳出警告並還原<br>點腳線的區段：標記為走過（綠色）<br>點上方字母或下方數字：切換模式和線</p>
+<!-- probability bars are written here -->
 <div id="out"></div>
 <script>
+// N = number of vertical lines, H = number of rows of possible rungs
 const N = 6, H = 5;
+// labels shown above the lines (start points)
 const START_LABELS = "ABCDEF";
+// known[r][i]: null = unknown, 1 = rung exists, 0 = no rung (slot between line i and i+1 in row r)
 const known = Array.from({ length: H }, () => Array(N - 1).fill(null));
-// walked[r][x] = true means the leg section just below row r on line x was walked.
+// walked[r][x] = true means the leg section just below row r on line x is green
 const walked = Array.from({ length: H }, () => Array(N).fill(false));
-// walkedTop[x] = true means the top section (above row 0) of line x is colored.
-// Purely visual: nothing in the calculation reads this array.
+// walkedTop[x] = true means the top section (above row 0) of line x is green; purely visual
 const walkedTop = Array(N).fill(false);
-// A slot is locked when a walked section starts right beside it.
-const isLocked = (r, i) => walked[r][i] || walked[r][i + 1];
+// remembers the last valid K so we can undo an impossible change
+let lastK = 5;
 
+// True when a green section starts right beside this slot (the section's higher end touches it)
+// walked[r][i] = section below row r on the slot's left line; walked[r][i + 1] = on its right line
+const besideWalked = (r, i) => walked[r][i] || walked[r][i + 1];
+
+// Grid used by the calculation: a copy of `known` where unknown slots
+// at a green leg's higher end count as "no rung" (0)
+const effective = () =>
+  known.map((row, r) =>                                          // go through every row
+    row.map((v, i) => (v === null && besideWalked(r, i) ? 0 : v))); // null beside green leg -> 0, else keep
+
+// count how many bits are 1 in a number (= how many rungs in a row pattern)
 function bits(m) { let c = 0; while (m) { c += m & 1; m >>= 1; } return c; }
 
+// probability of each end line, given a start line, K rungs and a known grid
 function endpointProbs(n, h, K, start, known) {
-  // Every legal rung pattern per row, stored as a bitmask.
+  // legal rung patterns per row, stored as bitmasks
   const rows = [];
   for (let r = 0; r < h; r++) {
     const pats = [];
-    for (let m = 0; m < (1 << (n - 1)); m++) {
-      if (m & (m >> 1)) continue; // adjacent rungs are not allowed
-      let ok = true;
+    for (let m = 0; m < (1 << (n - 1)); m++) {                   // try every bitmask
+      if (m & (m >> 1)) continue;                                // adjacent rungs are not allowed
+      let ok = true;                                             // assume the pattern fits
       for (let i = 0; i < n - 1; i++) {
-        const k = known[r][i];
-        if (k !== null && k !== ((m >> i) & 1)) ok = false;
+        const k = known[r][i];                                   // known value of this slot
+        if (k !== null && k !== ((m >> i) & 1)) ok = false;      // contradicts a known slot
       }
-      if (ok) pats.push(m);
+      if (ok) pats.push(m);                                      // keep legal pattern
     }
     rows.push(pats);
   }
-  // State key: "position,rungsUsed,gapsCovered" -> number of ways.
+  // state key "position,rungsUsed,gapsCovered" -> number of ways
   let dp = new Map([[`${start},0,0`, 1]]);
-  for (const pats of rows) {
+  for (const pats of rows) {                                     // process row by row
     const next = new Map();
     for (const [key, ways] of dp) {
-      const [pos, used, cov] = key.split(",").map(Number);
+      const [pos, used, cov] = key.split(",").map(Number);       // decode the state
       for (const m of pats) {
-        let np = pos;
-        if (pos < n - 1 && ((m >> pos) & 1)) np = pos + 1;
-        else if (pos > 0 && ((m >> (pos - 1)) & 1)) np = pos - 1;
-        const nk = `${np},${used + bits(m)},${cov | m}`;
-        next.set(nk, (next.get(nk) || 0) + ways);
+        let np = pos;                                            // new position, default stays
+        if (pos < n - 1 && ((m >> pos) & 1)) np = pos + 1;       // rung on the right: move right
+        else if (pos > 0 && ((m >> (pos - 1)) & 1)) np = pos - 1; // rung on the left: move left
+        const nk = `${np},${used + bits(m)},${cov | m}`;         // new state key
+        next.set(nk, (next.get(nk) || 0) + ways);                // add the ways
       }
     }
-    dp = next;
+    dp = next;                                                   // move to the next row
   }
-  const full = (1 << (n - 1)) - 1;
-  const counts = Array(n).fill(0);
+  const full = (1 << (n - 1)) - 1;                               // mask with every gap set
+  const counts = Array(n).fill(0);                               // ways to end on each line
   for (const [key, ways] of dp) {
     const [pos, used, cov] = key.split(",").map(Number);
-    if (used === K && cov === full) counts[pos] += ways;
+    if (used === K && cov === full) counts[pos] += ways;         // exactly K rungs, all gaps covered
   }
-  const total = counts.reduce((a, b) => a + b, 0);
-  return total ? counts.map(c => c / total) : counts;
+  const total = counts.reduce((a, b) => a + b, 0);               // all valid ways
+  return total ? counts.map(c => c / total) : counts;            // normalize (or all zeros)
 }
 
+// is there at least one legal ladder that fits the known grid?
+function feasible(n, h, K, known) {
+  const full = (1 << (n - 1)) - 1;                               // mask with every gap set
+  let states = new Set(["0,0"]);                                 // each state is "rungsUsed,gapsCovered"
+  for (let r = 0; r < h; r++) {
+    const next = new Set();
+    for (const key of states) {
+      const [used, cov] = key.split(",").map(Number);            // decode the state
+      for (let m = 0; m < (1 << (n - 1)); m++) {                 // try every pattern for this row
+        if (m & (m >> 1)) continue;                              // adjacent rungs are not allowed
+        let ok = true;
+        for (let i = 0; i < n - 1; i++) {
+          const k = known[r][i];
+          if (k !== null && k !== ((m >> i) & 1)) ok = false;    // contradicts a known slot
+        }
+        if (ok) next.add(`${used + bits(m)},${cov | m}`);        // record the new state
+      }
+    }
+    states = next;                                               // next row
+  }
+  return states.has(`${K},${full}`);                             // exactly K rungs and every gap covered
+}
+
+// for every unknown slot, find out if the rules force it to be 1 or 0
+function deduce(n, h, K, known) {
+  const out = Array.from({ length: h }, () => Array(n - 1).fill(null)); // null = not forced
+  for (let r = 0; r < h; r++) for (let i = 0; i < n - 1; i++) {
+    if (known[r][i] !== null) continue;                          // only unknown slots are checked
+    known[r][i] = 1; const can1 = feasible(n, h, K, known);      // is "has rung" possible?
+    known[r][i] = 0; const can0 = feasible(n, h, K, known);      // is "no rung" possible?
+    known[r][i] = null;                                          // restore the unknown state
+    if (can1 && !can0) out[r][i] = 1;                            // only "has rung" works -> forced true
+    else if (!can1 && can0) out[r][i] = 0;                       // only "no rung" works -> forced false
+  }
+  return out;
+}
+
+// x / y coordinates of line i and row r in the drawing
 const X = i => 30 + i * 48, Y = r => 50 + r * 35;
+// short helper to find an element by id
 const $ = id => document.getElementById(id);
 
-function tap(r, i) {
-  const v = known[r][i];
-  if (isLocked(r, i)) known[r][i] = v === 1 ? 0 : 1; // locked: only exist / not exist
-  else known[r][i] = v === null ? 1 : v === 1 ? 0 : null;
-  if (known[r][i] === 1) {
-    // Rungs can't touch: turn off a neighbouring rung in the same row.
-    for (const j of [i - 1, i + 1]) {
-      if (j >= 0 && j < N - 1 && known[r][j] === 1) known[r][j] = 0;
-    }
+// click on a slot; right = false for left click, true for right click
+function tap(r, i, right) {
+  const K = +$("K").value;                                       // current number of rungs
+  const deduced = deduce(N, H, K, effective());                  // slots forced by the rules
+  const old = known[r][i];                                       // remember old state to undo
+  let next;                                                      // the new state we will try
+  if (old === null) {
+    // "known null": forced by rules, or defaulted to a cross by the green leg
+    const forced = deduced[r][i] !== null ? deduced[r][i] : (besideWalked(r, i) ? 0 : null);
+    // if the state is known, both clicks give it; otherwise left = true, right = false
+    next = forced !== null ? forced : (right ? 0 : 1);
+  } else if (old === 1) {
+    next = right ? null : 0;                                     // true: left -> false, right -> null
+  } else {
+    next = right ? null : 1;                                     // false: left -> true, right -> null
   }
-  update();
+  known[r][i] = next;                                            // apply the change
+  if (!feasible(N, H, K, effective())) {                         // does any legal ladder still exist?
+    known[r][i] = old;                                           // no: undo the change
+    alert("這個設定會讓盤面不可能成立（橫線數、相鄰規則或每格都要有線）");
+    return;                                                      // stop, do not redraw
+  }
+  update();                                                      // yes: redraw and recalculate
 }
 
+// click on a leg section: toggle the green highlight
 function tapSection(r, x) {
-  walked[r][x] = !walked[r][x];
-  for (const i of [x - 1, x]) {
-    if (i < 0 || i >= N - 1) continue;
-    if (isLocked(r, i)) { if (known[r][i] === null) known[r][i] = 0; }
-    else known[r][i] = null;
+  const K = +$("K").value;                                       // current number of rungs
+  walked[r][x] = !walked[r][x];                                  // toggle the highlight
+  if (!feasible(N, H, K, effective())) {                         // highlight changes the default crosses
+    walked[r][x] = !walked[r][x];                                // impossible: toggle it back
+    alert("標記這段腳線會讓盤面不可能成立");
+    return;
   }
   update();
 }
 
+// click on the top section of a line: purely visual green highlight
 function tapTop(x) {
-  walkedTop[x] = !walkedTop[x];
-  update();
+  walkedTop[x] = !walkedTop[x];                                  // toggle the highlight
+  update();                                                      // redraw
 }
 
+// click on a label above/below the ladder: switch mode and picked line
 function choose(mode, i) {
-  $("mode").value = mode;
-  fillPick();
-  $("pick").value = i;
-  update();
+  $("mode").value = mode;                                        // set the mode
+  fillPick();                                                    // rebuild the pick list for this mode
+  $("pick").value = i;                                           // select the clicked line
+  update();                                                      // redraw
 }
 
+// redraw the ladder and recalculate the probabilities
 function update() {
-  let s = "";
+  const K = +$("K").value, pick = +$("pick").value;              // current K and picked line
+  const forward = $("mode").value === "f";                       // true when picking a start
+  const eff = effective();                                       // grid used by deduction and probabilities
+  const deduced = deduce(N, H, K, eff);                          // forced values for unknown slots
+
+  let s = "";                                                    // SVG markup is collected here
+  // vertical lines and the labels at both ends
   for (let i = 0; i < N; i++) {
-    const fwd = $("mode").value === "f", sel = +$("pick").value === i;
-    const topOn = fwd && sel, botOn = !fwd && sel;
-    s += `<line x1="${X(i)}" y1="20" x2="${X(i)}" y2="230" stroke="#333"/>`;
-    s += `<text class="slot" onclick="choose('f',${i})" x="${X(i)}" y="14" text-anchor="middle" fill="${topOn ? "#d33" : "#000"}" font-weight="${topOn ? "bold" : "normal"}">${START_LABELS[i]}</text>`;
-    s += `<text class="slot" onclick="choose('b',${i})" x="${X(i)}" y="248" text-anchor="middle" fill="${botOn ? "#d33" : "#000"}" font-weight="${botOn ? "bold" : "normal"}">${i + 1}</text>`;
+    const sel = pick === i;                                      // is this line the picked one?
+    const topOn = forward && sel, botOn = !forward && sel;       // highlight top or bottom label
+    s += `<line x1="${X(i)}" y1="20" x2="${X(i)}" y2="230" stroke="#333"/>`; // the vertical line
+    s += `<text class="slot" onclick="choose('f',${i})" x="${X(i)}" y="14" text-anchor="middle" fill="${topOn ? "#d33" : "#000"}" font-weight="${topOn ? "bold" : "normal"}">${START_LABELS[i]}</text>`; // top label
+    s += `<text class="slot" onclick="choose('b',${i})" x="${X(i)}" y="248" text-anchor="middle" fill="${botOn ? "#d33" : "#000"}" font-weight="${botOn ? "bold" : "normal"}">${i + 1}</text>`; // bottom label
   }
+  // rung slots
   for (let r = 0; r < H; r++) for (let i = 0; i < N - 1; i++) {
-    const v = known[r][i], y = Y(r);
-    s += `<g class="slot" onclick="tap(${r},${i})">`;
-    s += `<rect x="${X(i) + 8}" y="${y - 14}" width="32" height="28" fill="transparent"/>`;
-    if (v === 0) s += `<text x="${X(i) + 24}" y="${y + 4}" text-anchor="middle" fill="#999">✕</text>`;
-    else s += `<line x1="${X(i)}" y1="${y}" x2="${X(i + 1)}" y2="${y}" stroke="${v === 1 ? "#d33" : "#bbb"}" stroke-width="${v === 1 ? 4 : 1}" ${v === null ? 'stroke-dasharray="4"' : ""}/>`;
+    const v = known[r][i], d = deduced[r][i], y = Y(r);          // set value, deduced value, y position
+    // left click = tap(..., false); right click = tap(..., true) and the browser menu is blocked
+    s += `<g class="slot" onclick="tap(${r},${i},false)" oncontextmenu="event.preventDefault();tap(${r},${i},true)">`;
+    s += `<rect x="${X(i) + 8}" y="${y - 14}" width="32" height="28" fill="transparent"/>`; // click area
+    if (v === 1) s += `<line x1="${X(i)}" y1="${y}" x2="${X(i + 1)}" y2="${y}" stroke="#d33" stroke-width="4"/>`; // set true: red line
+    else if (v === 0) s += `<text x="${X(i) + 24}" y="${y + 4}" text-anchor="middle" fill="#d33">✕</text>`; // set false: red cross
+    else if (d === 1) s += `<line x1="${X(i)}" y1="${y}" x2="${X(i + 1)}" y2="${y}" stroke="#bbb" stroke-width="4"/>`; // deduced true: grey line
+    else if (d === 0) s += `<text x="${X(i) + 24}" y="${y + 4}" text-anchor="middle" fill="#bbb">✕</text>`; // deduced false: grey cross
+    else if (besideWalked(r, i)) s += `<text x="${X(i) + 24}" y="${y + 4}" text-anchor="middle" fill="#bbb">✕</text>`; // unknown at green leg's higher end: grey cross
+    else s += `<line x1="${X(i)}" y1="${y}" x2="${X(i + 1)}" y2="${y}" stroke="#bbb" stroke-dasharray="4"/>`; // truly unknown: grey dashed
     s += `</g>`;
   }
-  
-  // First section of each leg: from the top of the line (y=20) down to the first rung row.
+  // top section of each leg (from y=20 down to the first rung row)
   for (let x = 0; x < N; x++) {
-    if (walkedTop[x]) s += `<line x1="${X(x)}" y1="20" x2="${X(x)}" y2="${Y(0)}" stroke="#2a9d4a" stroke-width="5"/>`;
-    s += `<rect class="slot" onclick="tapTop(${x})" x="${X(x) - 8}" y="20" width="16" height="${Y(0) - 20}" fill="transparent"/>`;
+    if (walkedTop[x]) s += `<line x1="${X(x)}" y1="20" x2="${X(x)}" y2="${Y(0)}" stroke="#2a9d4a" stroke-width="5"/>`; // green overlay
+    s += `<rect class="slot" onclick="tapTop(${x})" x="${X(x) - 8}" y="20" width="16" height="${Y(0) - 20}" fill="transparent"/>`; // click area
   }
-
+  // the other leg sections (from row r down to row r+1, or to the bottom)
   for (let r = 0; r < H; r++) for (let x = 0; x < N; x++) {
-    const y1 = Y(r), y2 = r < H - 1 ? Y(r + 1) : 230;
-    if (walked[r][x]) s += `<line x1="${X(x)}" y1="${y1}" x2="${X(x)}" y2="${y2}" stroke="#2a9d4a" stroke-width="5"/>`;
-    s += `<rect class="slot" onclick="tapSection(${r},${x})" x="${X(x) - 8}" y="${y1}" width="16" height="${y2 - y1}" fill="transparent"/>`;
+    const y1 = Y(r), y2 = r < H - 1 ? Y(r + 1) : 230;            // section start and end
+    if (walked[r][x]) s += `<line x1="${X(x)}" y1="${y1}" x2="${X(x)}" y2="${y2}" stroke="#2a9d4a" stroke-width="5"/>`; // green overlay
+    s += `<rect class="slot" onclick="tapSection(${r},${x})" x="${X(x) - 8}" y="${y1}" width="16" height="${y2 - y1}" fill="transparent"/>`; // click area
   }
-  $("svg").innerHTML = s;
+  $("svg").innerHTML = s;                                        // put the drawing on the page
 
-  const K = +$("K").value, pick = +$("pick").value;
-  const forward = $("mode").value === "f";
+  // probabilities: backward mode reuses the same function with the rows flipped
   const probs = forward
-    ? endpointProbs(N, H, K, pick, known)
-    : endpointProbs(N, H, K, pick, known.slice().reverse());
-  const outLabel = i => forward ? i + 1 : START_LABELS[i];
+    ? endpointProbs(N, H, K, pick, eff)
+    : endpointProbs(N, H, K, pick, eff.slice().reverse());
+  const outLabel = i => forward ? i + 1 : START_LABELS[i];       // label of each result line
   $("out").innerHTML = (forward ? "終點機率" : "起點機率") + probs.map((p, i) =>
-    `<div class="bar" style="width:${Math.max(p * 100, 8)}%">${outLabel(i)}：${(p * 100).toFixed(1)}%</div>`).join("");
+    `<div class="bar" style="width:${Math.max(p * 100, 8)}%">${outLabel(i)}：${(p * 100).toFixed(1)}%</div>`).join(""); // one bar per line
 }
 
+// fill the K dropdown with 5..9
 for (let k = 5; k <= 9; k++) $("K").add(new Option(k, k));
 
+// fill the pick dropdown: letters in forward mode, numbers in backward mode
 function fillPick() {
   const forward = $("mode").value === "f";
-  $("pick").innerHTML = "";
+  $("pick").innerHTML = "";                                      // clear old options
   for (let i = 0; i < N; i++) $("pick").add(new Option(forward ? START_LABELS[i] : i + 1, i));
 }
-fillPick();
+fillPick();                                                      // initial pick list
 
-["K", "pick"].forEach(id => $(id).onchange = update);
+// changing the picked line just redraws
+$("pick").onchange = update;
+// changing K is checked: if the current grid cannot work with the new K, warn and undo
+$("K").onchange = () => {
+  const K = +$("K").value;                                       // the K the user just chose
+  if (!feasible(N, H, K, effective())) {                         // impossible with this K?
+    alert("目前的盤面在這個橫線數下不可能成立");
+    $("K").value = lastK;                                        // put the old K back
+    return;
+  }
+  lastK = K;                                                     // remember this valid K
+  update();                                                      // redraw
+};
+// changing the mode rebuilds the pick list, then redraws
 $("mode").onchange = () => { fillPick(); update(); };
 
-update();
+update();                                                        // first draw
 </script>
 </body>
 </html>

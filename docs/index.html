@@ -18,13 +18,9 @@
 <h3>爬梯子預測</h3>
 <!-- number of rungs (K) -->
 <label>橫線數<select id="K"></select></label>
-<!-- forward = pick a start, backward = pick an end -->
-<label>模式 <select id="mode"><option value="f">選起點</option><option value="b">選終點</option></select></label>
-<!-- which line is picked -->
-<label>線 <select id="pick"></select></label>
 <!-- the ladder is drawn here -->
 <svg id="svg" viewBox="0 0 300 260"></svg>
-<p>左鍵：未知→有→沒有→有…　右鍵：未知→沒有；有／沒有→未知<br>灰色實線／灰色✕：未知，但規則已推得一定有／一定沒有（點一下會固定成那個狀態）<br>綠色腳線上端的未知位置預設為灰色✕（計算時視為沒有）<br>操作若會讓盤面不可能成立，會跳出警告並還原<br>點腳線的區段：標記為走過（綠色）<br>點上方字母或下方數字：切換模式和線</p>
+<p>左鍵：未知→有；已設定→切換有／沒有<br>右鍵：未知→沒有；已設定→取消<br>灰色是規則推得的，點一下就會設定<br>點直線：標記為走過<br>點上方字母：預測終點；點下方數字：預測是哪個起點</p>
 <!-- probability bars are written here -->
 <div id="out"></div>
 <script>
@@ -40,6 +36,10 @@ const walked = Array.from({ length: H }, () => Array(N).fill(false));
 const walkedTop = Array(N).fill(false);
 // remembers the last valid K so we can undo an impossible change
 let lastK = 5;
+// which end the user clicked: "f" = a start letter (predict the end), "b" = an end number (predict the start)
+let pickMode = "f";
+// index (0..N-1) of the clicked line
+let pickLine = 0;
 
 // True when a green section starts right beside this slot (the section's higher end touches it)
 // walked[r][i] = section below row r on the slot's left line; walked[r][i + 1] = on its right line
@@ -182,25 +182,24 @@ function tapTop(x) {
   update();                                                      // redraw
 }
 
-// click on a label above/below the ladder: switch mode and picked line
+// click on a label above/below the ladder
 function choose(mode, i) {
-  $("mode").value = mode;                                        // set the mode
-  fillPick();                                                    // rebuild the pick list for this mode
-  $("pick").value = i;                                           // select the clicked line
-  update();                                                      // redraw
+  pickMode = mode;                                               // remember which side was clicked
+  pickLine = i;                                                  // remember which line was clicked
+  update();                                                      // redraw and recalculate
 }
 
 // redraw the ladder and recalculate the probabilities
 function update() {
-  const K = +$("K").value, pick = +$("pick").value;              // current K and picked line
-  const forward = $("mode").value === "f";                       // true when picking a start
+  const K = +$("K").value;                                       // current number of rungs
+  const forward = pickMode === "f";                              // true when a start letter was clicked
   const eff = effective();                                       // grid used by deduction and probabilities
   const deduced = deduce(N, H, K, eff);                          // forced values for unknown slots
 
   let s = "";                                                    // SVG markup is collected here
   // vertical lines and the labels at both ends
   for (let i = 0; i < N; i++) {
-    const sel = pick === i;                                      // is this line the picked one?
+    const sel = pickLine === i;                                      // is this line the picked one?
     const topOn = forward && sel, botOn = !forward && sel;       // highlight top or bottom label
     s += `<line x1="${X(i)}" y1="20" x2="${X(i)}" y2="230" stroke="#333"/>`; // the vertical line
     s += `<text class="slot" onclick="choose('f',${i})" x="${X(i)}" y="14" text-anchor="middle" fill="${topOn ? "#d33" : "#000"}" font-weight="${topOn ? "bold" : "normal"}">${START_LABELS[i]}</text>`; // top label
@@ -235,8 +234,8 @@ function update() {
 
   // probabilities: backward mode reuses the same function with the rows flipped
   const probs = forward
-    ? endpointProbs(N, H, K, pick, eff)
-    : endpointProbs(N, H, K, pick, eff.slice().reverse());
+    ? endpointProbs(N, H, K, pickLine, eff)
+    : endpointProbs(N, H, K, pickLine, eff.slice().reverse());
   const outLabel = i => forward ? i + 1 : START_LABELS[i];       // label of each result line
   $("out").innerHTML = (forward ? "終點機率" : "起點機率") + probs.map((p, i) =>
     `<div class="bar" style="width:${Math.max(p * 100, 8)}%">${outLabel(i)}：${(p * 100).toFixed(1)}%</div>`).join(""); // one bar per line
@@ -245,16 +244,6 @@ function update() {
 // fill the K dropdown with 5..9
 for (let k = 5; k <= 9; k++) $("K").add(new Option(k, k));
 
-// fill the pick dropdown: letters in forward mode, numbers in backward mode
-function fillPick() {
-  const forward = $("mode").value === "f";
-  $("pick").innerHTML = "";                                      // clear old options
-  for (let i = 0; i < N; i++) $("pick").add(new Option(forward ? START_LABELS[i] : i + 1, i));
-}
-fillPick();                                                      // initial pick list
-
-// changing the picked line just redraws
-$("pick").onchange = update;
 // changing K is checked: if the current grid cannot work with the new K, warn and undo
 $("K").onchange = () => {
   const K = +$("K").value;                                       // the K the user just chose
@@ -266,8 +255,6 @@ $("K").onchange = () => {
   lastK = K;                                                     // remember this valid K
   update();                                                      // redraw
 };
-// changing the mode rebuilds the pick list, then redraws
-$("mode").onchange = () => { fillPick(); update(); };
 
 update();                                                        // first draw
 </script>
